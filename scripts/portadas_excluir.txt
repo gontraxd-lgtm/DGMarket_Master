@@ -1,0 +1,22 @@
+# Imágenes de images/ que no sirven como portada (infografías, escenas, etiquetas).
+# Revisadas a mano; una ruta relativa a images/ por línea.
+cuidado-personal/maquina-cortar-pelo-dorada/cortadora-oro-3.jpg
+cuidado-personal/maquina-cortar-pelo-grande/cortadora-neg-2.jpg
+cuidado-personal/maquina-cortar-pelo-grande/cortadora-neg-3.jpg
+cuidado-personal/maquina-cortar-pelo-grande/cortadora-neg-4.jpg
+pesca-y-caza/cintillo-linterna-led/cintillo.webp
+pesca-y-caza/cintillo-linterna-led/cinto.webp
+pesca-y-caza/cintillo-linterna-led/linterna-2.jpg
+pesca-y-caza/cintillo-linterna-led/linterna-3.jpg
+pesca-y-caza/cintillo-linterna-led/linterna-4.jpg
+pesca-y-caza/cintillo-linterna-led/linterna-5.jpg
+pesca-y-caza/cintillo-linterna-led/linterna-6.jpg
+pesca-y-caza/senuelos-poseidon/20260511-144524.jpg
+pesca-y-caza/senuelos-poseidon/20260511-144624.jpg
+tecnologia/cargador-solma-45w/cargador.webp
+tecnologia/cargador-solma-45w/solma-3.jpg
+tecnologia/cargador-solma-45w/solma.jpg
+tecnologia/micas-de-vidrio-iphone/mica-4.jpg
+# Caja blanca sobre fondo gris claro: ni el relleno ni rembg la limpian sin dañar la caja (editar a mano)
+tecnologia/cargador-solma-45w/solma-2.jpg
+tecnologia/cargador-solma-45w/solma-portada-45w-cargador.jpg
