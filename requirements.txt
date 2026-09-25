@@ -2,3 +2,5 @@ rembg[cpu]
 Pillow
 numpy
 scipy
+openai
+python-dotenv
