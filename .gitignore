@@ -1,1 +1,5 @@
 __pycache__/
+.env
+.cache_catalogo/
+_simulacion/
+catalogo_ia.log
