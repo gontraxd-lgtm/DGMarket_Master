@@ -13,7 +13,7 @@ Fecha: 2026-09-25 · Método: hash MD5 del contenido (todos los duplicados tambi
 ## Fuentes
 
 - **GitHub**: los 14 repositorios de producto de `gontraxd-lgtm` (`fotos-productos-dgmarket` está vacío).
-- **Google Drive**: las imágenes propias de la cuenta. Solo hay una: `image.jpg`, que en realidad es un PNG con el banner de DG Market. Se guardó como `images/google-drive/image.png`. Se excluyeron 4 imágenes que otras personas compartieron contigo y no son de productos: tareas de inglés, una captura de Word y `cadena.png`.
+- **Google Drive**: las imágenes propias de la cuenta. Solo hay una: `image.jpg`, que en realidad es un PNG con el banner de DG Market. Se guardó como `images/marca/dgmarket/banner-dgmarket.png`. Se excluyeron 4 imágenes que otras personas compartieron contigo y no son de productos: tareas de inglés, una captura de Word y `cadena.png`.
 - Se excluyó `cintillo-de-cabeza/cintillo_led_ficha.pdf` porque no es una imagen.
 
 | Fuente | Total | Únicas | Duplicadas |
@@ -44,9 +44,10 @@ Fecha: 2026-09-25 · Método: hash MD5 del contenido (todos los duplicados tambi
 
 ## Archivos
 
-- `images/<fuente>/…`: una copia de cada imagen única. Se conserva la primera aparición, recorriendo las fuentes en orden alfabético y Drive al final.
+- `images/<categoría>/<producto>/…`: una copia de cada imagen única, ordenada por categoría de la tienda y producto (ver `README.md`). Los nombres están normalizados: minúsculas, guiones en vez de espacios y typos corregidos. Ante duplicados se conservó la primera aparición, recorriendo las fuentes en orden alfabético y Drive al final.
 - `manifest.csv`: cada imagen de origen con su MD5, si es única o duplicada, y el archivo maestro que le corresponde.
-- `scripts/dedup_images.py`: script para repetir el proceso sobre carpetas locales:
+- `scripts/organize_images.py`: ordena `images/` por categoría y producto y actualiza `manifest.csv`.
+- `scripts/dedup_images.py`: script para repetir la deduplicación sobre carpetas locales:
 
 ```bash
 python3 scripts/dedup_images.py --dest images ruta/repo_github google-drive=ruta/carpeta_drive
