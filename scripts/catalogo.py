@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
-"""Arma el catálogo con OpenAI sin deformar los productos reales.
+"""Arma el catálogo sin deformar los productos reales (gratis por defecto).
 
 Por cada images/**/1_portada_<nombre>.jpg genera, en la misma carpeta:
 
-  2_contexto_<nombre>.jpg  OpenAI (DALL-E 3) genera SOLO un fondo vacío acorde al
-                           producto; el producto real se recorta de la portada y
-                           se pega intacto encima con una sombra base. 1500x1500.
-  3_specs_<nombre>.jpg     OpenAI (texto) propone 3 características cortas; se
-                           dibuja un lienzo gris claro con el producto real a la
-                           izquierda y las características a la derecha. 1500x1500.
+  2_contexto_<nombre>.jpg  el producto real, recortado de la portada, pegado
+                           intacto sobre una escena acorde (escritorio, sendero,
+                           río, cancha…) con sombra para que no flote. 1500x1500.
+  3_specs_<nombre>.jpg     lienzo gris claro con el producto real a la izquierda
+                           y título + 3 características a la derecha. 1500x1500.
 
-La IA nunca dibuja el producto: solo el fondo y el texto. Los píxeles del
-producto salen tal cual de la portada.
+Por defecto todo es local y gratis: las escenas se generan por código
+(scripts/fondos.py) y las características salen de scripts/datos_catalogo.py,
+escritas a partir de las infografías del propio catálogo.
 
-Si un archivo 2_ o 3_ ya existe, se salta. Si la API falla o se corta internet,
-espera y reintenta (sin límite) en vez de detenerse. Solo se detiene ante errores
-que esperar no arregla: API key inválida, sin saldo o modelo inexistente.
+Con --openai, el fondo lo genera la API de imágenes de OpenAI (DALL-E 3) y las
+características la API de texto (tiene costo; requiere OPENAI_API_KEY en .env).
+En ese modo, si la API falla o se corta internet, espera y reintenta sin
+detenerse; solo para ante errores que esperar no arregla (clave inválida, sin
+saldo, modelo inexistente).
+
+Si un archivo 2_ o 3_ ya existe, se salta: se puede cortar y volver a correr.
 
 Uso:
-    python scripts/catalogo_ia.py                   # todo images/
-    python scripts/catalogo_ia.py --limite 3        # prueba con 3 portadas
-    python scripts/catalogo_ia.py images/deportes   # solo una carpeta
-    python scripts/catalogo_ia.py --simular         # sin API ni costo, en _simulacion/
-
-La API key se lee de la variable de entorno OPENAI_API_KEY o del archivo .env
-en la raíz del repo (ver .env.example).
+    python scripts/catalogo.py                   # todo images/, gratis
+    python scripts/catalogo.py images/deportes   # solo una carpeta
+    python scripts/catalogo.py --limite 3        # prueba con 3 portadas
+    python scripts/catalogo.py --openai          # fondos y textos con OpenAI (pagado)
 """
 import argparse
 import base64
@@ -34,16 +35,20 @@ import logging
 import os
 import sys
 import time
+import zlib
 from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fondos  # noqa: E402
+from datos_catalogo import PRODUCTOS, ficha  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 IMAGES = ROOT / "images"
 CACHE = ROOT / ".cache_catalogo"
-SIM_DIR = ROOT / "_simulacion"
-LOG_FILE = ROOT / "catalogo_ia.log"
+LOG_FILE = ROOT / "catalogo.log"
 
 SIZE = 1500
 GRIS = (238, 238, 238)
@@ -54,7 +59,7 @@ ESPERA_MAXIMA = 15 * 60
 
 log = logging.getLogger("catalogo")
 
-# Escenas por producto (carpeta) y, si no hay, por categoría.
+# Escenas para OpenAI (--openai), por producto (carpeta) y, si no hay, por categoría.
 # Siempre se pide el centro vacío: ahí va el producto real.
 ESCENAS = {
     "cables-iphone": "a clean minimalist white desk setup with a blurred laptop and a small plant at the edges",
@@ -71,10 +76,12 @@ ESCENAS = {
     "maquina-cortar-pelo-dorada": "a modern barbershop counter with dark marble and warm lights, blurred background",
     "maquina-cortar-pelo-grande": "a modern barbershop counter with dark marble and warm lights, blurred background",
 }
-# Productos blancos o transparentes: rembg los dañaría, se recortan con relleno.
+# Productos blancos o transparentes: rembg los dañaría, se recortan con relleno
+# desde los bordes, con esta tolerancia. Cajas blancas: baja (6) para no comerse
+# la caja; vidrios con borde oscuro: alta (25) para limpiar reflejos blancos.
 # El resto usa rembg, que también limpia los huecos (correas, marcos, agujeros).
-USAR_RELLENO = {"cables-iphone", "cargador-iphone-20w", "micas-de-vidrio-iphone",
-                "carcasas-transparentes-magsafe-iphone"}
+USAR_RELLENO = {"cables-iphone": 6, "cargador-iphone-20w": 6, "micas-de-vidrio-iphone": 25,
+                "carcasas-transparentes-magsafe-iphone": 25}
 ESCENAS_CATEGORIA = {
     "tecnologia": "a clean modern desk setup with soft daylight",
     "deportes": "an outdoor sports environment with soft natural light",
@@ -154,7 +161,7 @@ def envolver(texto: str, font: ImageFont.FreeTypeFont, ancho: int) -> list[str]:
 _REMBG = None
 
 
-def extraer_producto(portada: Path, metodo: str) -> tuple[Image.Image, float]:
+def extraer_producto(portada: Path, metodo: str, tolerancia: int = 6) -> tuple[Image.Image, float]:
     """Recorta el producto de la portada (fondo blanco puro) sin tocar sus píxeles.
 
     metodo="relleno": rellena el blanco desde los bordes. Lo blanco DENTRO del
@@ -176,7 +183,7 @@ def extraer_producto(portada: Path, metodo: str) -> tuple[Image.Image, float]:
     else:
         marca = (255, 0, 255)
         relleno = ImageOps.expand(rgb, border=2, fill=(255, 255, 255))
-        ImageDraw.floodfill(relleno, (0, 0), marca, thresh=6)
+        ImageDraw.floodfill(relleno, (0, 0), marca, thresh=tolerancia)
         es_fondo = (np.array(relleno.crop((2, 2, rgb.width + 2, rgb.height + 2))) == marca).all(axis=2)
         alpha = Image.fromarray(np.where(es_fondo, 0, 255).astype(np.uint8))
         # borde suave de 1 px para que no se vea recortado con tijera
@@ -257,7 +264,29 @@ def con_reintentos(fn, que: str):
         espera, intento = min(espera * 2, ESPERA_MAXIMA), intento + 1
 
 
+class LocalBackend:
+    """Gratis y sin internet: escenas por código y fichas escritas a mano."""
+    cachear = False
+
+    def __init__(self):
+        self._fondos = {}
+
+    def fondo(self, producto: str, categoria: str) -> Image.Image:
+        escena = PRODUCTOS.get(producto, {}).get("escena", "estudio")
+        if producto not in self._fondos:  # misma escena para todas las variantes del producto
+            self._fondos[producto] = fondos.generar(escena, semilla=zlib.crc32(producto.encode()))
+        return self._fondos[producto]
+
+    def specs(self, producto: str, nombre: str) -> dict:
+        f = ficha(producto, nombre)
+        if not f:
+            raise ErrorProducto(f"'{producto}' no tiene ficha: agrégalo a scripts/datos_catalogo.py")
+        return f
+
+
 class OpenAIBackend:
+    cachear = True
+
     def __init__(self, modelo_imagen: str, modelo_texto: str):
         from openai import OpenAI
 
@@ -267,7 +296,8 @@ class OpenAIBackend:
         self.client = OpenAI(max_retries=0, timeout=180)
         self.modelo_imagen, self.modelo_texto = modelo_imagen, modelo_texto
 
-    def fondo(self, escena: str) -> Image.Image:
+    def fondo(self, producto: str, categoria: str) -> Image.Image:
+        escena = ESCENAS.get(producto) or ESCENAS_CATEGORIA.get(categoria, "a clean studio tabletop")
         kwargs = dict(model=self.modelo_imagen, prompt=PROMPT_FONDO.format(escena=escena), size="1024x1024", n=1)
         if self.modelo_imagen.startswith("dall-e"):
             kwargs["response_format"] = "b64_json"  # los gpt-image siempre devuelven base64
@@ -277,7 +307,9 @@ class OpenAIBackend:
             raise ErrorProducto("la API no devolvió imagen")
         return Image.open(io.BytesIO(base64.b64decode(datos))).convert("RGB")
 
-    def specs(self, descripcion: str) -> dict:
+    def specs(self, producto: str, nombre: str) -> dict:
+        descripcion = f"{humano(producto)} ({humano(nombre)})"
+
         def pedir():
             resp = self.client.chat.completions.create(
                 model=self.modelo_texto,
@@ -296,29 +328,12 @@ class OpenAIBackend:
         raise ErrorProducto("la API de texto no devolvió 3 características válidas")
 
 
-class SimuladoBackend:
-    """Sin API ni costo: fondo degradado y características de ejemplo. Para probar el montaje."""
-
-    def fondo(self, escena: str) -> Image.Image:
-        arriba, abajo = (205, 220, 235), (150, 160, 150)
-        img = Image.new("RGB", (1024, 1024))
-        d = ImageDraw.Draw(img)
-        for y in range(1024):
-            t = y / 1023
-            d.line([(0, y), (1023, y)], fill=tuple(round(a + (b - a) * t) for a, b in zip(arriba, abajo)))
-        return img
-
-    def specs(self, descripcion: str) -> dict:
-        return {"titulo": descripcion.split(" (")[0].title(),
-                "caracteristicas": ["Característica de ejemplo uno", "Segunda característica de ejemplo",
-                                    "Tercera característica corta"]}
-
-
 def validar_specs(d: dict) -> dict:
     carac = [str(c).strip().rstrip(".") for c in d["caracteristicas"] if str(c).strip()]
     if len(carac) < 3:
         raise ValueError("menos de 3 características")
-    return {"titulo": str(d.get("titulo", "")).strip()[:60], "caracteristicas": [c[:80] for c in carac[:3]]}
+    return {"titulo": str(d.get("titulo", "")).strip()[:60], "subtitulo": None,
+            "caracteristicas": [c[:80] for c in carac[:3]]}
 
 
 # ------------------------------------------------------------------- montajes
@@ -347,17 +362,23 @@ def crear_specs(producto: Image.Image, base: float, specs: dict) -> Image.Image:
 
     d = ImageDraw.Draw(lienzo)
     x, ancho = 720, 700
-    f_titulo, f_item, f_num = fuente("bold", 76), fuente("regular", 54), fuente("bold", 46)
-    alto_linea_t, alto_linea_i, circulo, sangria = 92, 70, 88, 120
+    f_titulo, f_sub, f_item, f_num = fuente("bold", 76), fuente("regular", 40), fuente("regular", 54), fuente("bold", 46)
+    alto_linea_t, alto_linea_s, alto_linea_i, circulo, sangria = 92, 52, 70, 88, 120
     titulo = envolver(specs["titulo"], f_titulo, ancho) if specs["titulo"] else []
+    sub = envolver(specs.get("subtitulo") or "", f_sub, ancho)[:4]
     items = [envolver(c, f_item, ancho - sangria) for c in specs["caracteristicas"]]
 
-    alto_titulo = len(titulo) * alto_linea_t + (80 if titulo else 0)
+    alto_titulo = len(titulo) * alto_linea_t + (len(sub) * alto_linea_s + 16 if sub else 0) + (80 if titulo else 0)
     alto_items = sum(max(circulo, len(l) * alto_linea_i) for l in items) + 64 * (len(items) - 1)
     y = (SIZE - alto_titulo - alto_items) // 2
     for linea in titulo:
         d.text((x, y), linea, font=f_titulo, fill=TEXTO)
         y += alto_linea_t
+    if sub:
+        y += 16
+        for linea in sub:
+            d.text((x, y), linea, font=f_sub, fill=(100, 100, 100))
+            y += alto_linea_s
     if titulo:
         d.rounded_rectangle((x, y + 18, x + 130, y + 30), radius=6, fill=ACENTO)
         y += 80
@@ -378,7 +399,7 @@ def crear_specs(producto: Image.Image, base: float, specs: dict) -> Image.Image:
 def procesar(portada: Path, backend, args) -> tuple[bool, bool]:
     nombre = portada.stem.removeprefix("1_portada_")
     rel = portada.resolve().relative_to(IMAGES)
-    carpeta = portada.parent if not args.simular else SIM_DIR / rel.parent
+    carpeta = portada.parent if not args.salida else args.salida.resolve() / rel.parent
     dest_ctx, dest_specs = carpeta / f"2_contexto_{nombre}.jpg", carpeta / f"3_specs_{nombre}.jpg"
     producto_slug, categoria = rel.parent.name, rel.parts[0]
     hacer_ctx, hacer_specs = not dest_ctx.exists(), not dest_specs.exists()
@@ -388,24 +409,26 @@ def procesar(portada: Path, backend, args) -> tuple[bool, bool]:
     metodo = args.extractor
     if metodo == "auto":
         metodo = "relleno" if producto_slug in USAR_RELLENO else "rembg"
-    producto, base = extraer_producto(portada, metodo)
-    clave = CACHE / ("simulado" if args.simular else "api") / rel.parent / nombre
+    producto, base = extraer_producto(portada, metodo, USAR_RELLENO.get(producto_slug, 6))
+    clave = CACHE / rel.parent / nombre
     if hacer_ctx:
-        escena = ESCENAS.get(producto_slug) or ESCENAS_CATEGORIA.get(categoria, "a clean studio tabletop")
         cache_fondo = clave.with_suffix(".fondo.png")
-        if cache_fondo.exists():
+        if backend.cachear and cache_fondo.exists():
             fondo = Image.open(cache_fondo).convert("RGB")
         else:
-            fondo = backend.fondo(escena)
-            cache_fondo.parent.mkdir(parents=True, exist_ok=True)
-            fondo.save(cache_fondo)
+            fondo = backend.fondo(producto_slug, categoria)
+            if backend.cachear:
+                cache_fondo.parent.mkdir(parents=True, exist_ok=True)
+                fondo.save(cache_fondo)
         guardar_jpg(crear_contexto(producto, base, fondo), dest_ctx)
-        log.info("  creado %s", dest_ctx.relative_to(ROOT))
+        log.info("  creado %s", dest_ctx.relative_to(ROOT) if dest_ctx.is_relative_to(ROOT) else dest_ctx)
     if hacer_specs:
-        descripcion = f"{humano(producto_slug)} ({humano(nombre)})"
-        specs = cache_json(clave.with_suffix(".specs.json"), lambda: backend.specs(descripcion))
+        if backend.cachear:
+            specs = cache_json(clave.with_suffix(".specs.json"), lambda: backend.specs(producto_slug, nombre))
+        else:
+            specs = backend.specs(producto_slug, nombre)
         guardar_jpg(crear_specs(producto, base, specs), dest_specs)
-        log.info("  creado %s", dest_specs.relative_to(ROOT))
+        log.info("  creado %s", dest_specs.relative_to(ROOT) if dest_specs.is_relative_to(ROOT) else dest_specs)
     return hacer_ctx, hacer_specs
 
 
@@ -413,7 +436,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("rutas", nargs="*", type=Path, default=[IMAGES], help="carpetas o portadas (por defecto images/)")
     ap.add_argument("--limite", type=int, default=0, help="procesar como máximo N portadas pendientes (para probar)")
-    ap.add_argument("--simular", action="store_true", help="sin API ni costo; guarda en _simulacion/")
+    ap.add_argument("--openai", action="store_true", help="fondos y textos con la API de OpenAI (pagado)")
+    ap.add_argument("--salida", type=Path, help="guardar en otra carpeta en vez de junto a cada portada")
     ap.add_argument("--extractor", choices=["auto", "relleno", "rembg"], default="auto",
                     help="cómo recortar el producto de la portada (auto: según el tipo de producto)")
     ap.add_argument("--modelo-imagen", default=os.environ.get("OPENAI_MODELO_IMAGEN", "dall-e-3"))
@@ -440,13 +464,15 @@ def main() -> int:
         return 1
 
     try:
-        backend = SimuladoBackend() if args.simular else OpenAIBackend(args.modelo_imagen, args.modelo_texto)
+        backend = OpenAIBackend(args.modelo_imagen, args.modelo_texto) if args.openai else LocalBackend()
     except ErrorFatal as e:
         log.error("DETENIDO: %s", e)
         return 2
 
-    log.info("%d portadas encontradas. Modelos: imagen=%s texto=%s%s", len(portadas), args.modelo_imagen,
-             args.modelo_texto, " (SIMULACIÓN)" if args.simular else "")
+    if args.openai:
+        log.info("%d portadas. Modo OpenAI: imagen=%s texto=%s", len(portadas), args.modelo_imagen, args.modelo_texto)
+    else:
+        log.info("%d portadas. Modo local (gratis).", len(portadas))
     hechos = saltados = fallidos = 0
     for i, portada in enumerate(portadas, 1):
         if args.limite and hechos >= args.limite:
