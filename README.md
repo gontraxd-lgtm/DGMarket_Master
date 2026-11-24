@@ -72,7 +72,7 @@ Todo es local y **gratis**: no usa IA ni internet, así que el producto nunca se
 ### Regenerar o agregar productos
 
 ```powershell
-cd C:\Users\pc\DGMarket_Master
+cd C:\Users\pc\Desktop\DGMARKET-Negocio\04_Productos-y-fotos\DGMarket_Master-github
 pip install -r requirements.txt
 python scripts/catalogo.py                    # solo crea las que faltan
 python scripts/catalogo.py images/deportes    # solo una carpeta
